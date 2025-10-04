@@ -19,12 +19,51 @@ import numpy as np
 import streamlit as st
 from openai import OpenAI
 import matplotlib.pyplot as plt
-from typing import List, Any, Optional
+import seaborn as sns
+from typing import List, Any, Optional, Dict, Tuple
+import warnings
+warnings.filterwarnings('ignore')
+
+# Try to load from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, continue without it
 
 # === Configuration ===
 # Global configuration
 API_BASE_URL = "https://integrate.api.nvidia.com/v1"
 API_KEY = os.environ.get("NVIDIA_API_KEY")
+
+# Check if API key is available
+if not API_KEY:
+    st.error("""
+    **NVIDIA API Key Required**
+    
+    Please set your NVIDIA API key using one of these methods:
+    
+    **Method 1 - PowerShell (temporary):**
+    ```powershell
+    $env:NVIDIA_API_KEY="your_api_key_here"
+    ```
+    
+    **Method 2 - System Environment Variables:**
+    1. Press Win + R, type `sysdm.cpl`, press Enter
+    2. Go to "Advanced" tab → "Environment Variables"
+    3. Under "User variables", click "New"
+    4. Variable name: `NVIDIA_API_KEY`
+    5. Variable value: your actual API key
+    
+    **Method 3 - Create .env file:**
+    Create a `.env` file in this directory with:
+    ```
+    NVIDIA_API_KEY=your_api_key_here
+    ```
+    
+    Get your API key from: https://build.nvidia.com/
+    """)
+    st.stop()
 
 # Plot configuration
 DEFAULT_FIGSIZE = (6, 4)
@@ -414,6 +453,273 @@ def DataInsightAgent(df: pd.DataFrame) -> str:
     except Exception as exc:
         raise Exception(f"Error generating dataset insights: {exc}")
 
+# === EDA TOOLS =========================================================
+
+def StatisticalSummaryTool(df: pd.DataFrame) -> Dict[str, Any]:
+    """Generate comprehensive statistical summary of the dataset."""
+    summary = {
+        "basic_info": {
+            "shape": df.shape,
+            "memory_usage": df.memory_usage(deep=True).sum() / 1024**2,  # MB
+            "dtypes": df.dtypes.value_counts().to_dict()
+        },
+        "missing_data": {
+            "total_missing": df.isnull().sum().sum(),
+            "missing_percentage": (df.isnull().sum().sum() / (df.shape[0] * df.shape[1])) * 100,
+            "columns_with_missing": df.isnull().sum()[df.isnull().sum() > 0].to_dict()
+        },
+        "numeric_summary": None,
+        "categorical_summary": None
+    }
+    
+    # Numeric columns summary
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        summary["numeric_summary"] = df[numeric_cols].describe().to_dict()
+    
+    # Categorical columns summary
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+    if len(categorical_cols) > 0:
+        cat_summary = {}
+        for col in categorical_cols:
+            cat_summary[col] = {
+                "unique_count": df[col].nunique(),
+                "most_frequent": df[col].mode().iloc[0] if not df[col].mode().empty else None,
+                "frequency": df[col].value_counts().iloc[0] if not df[col].empty else 0
+            }
+        summary["categorical_summary"] = cat_summary
+    
+    return summary
+
+def DataProfilingTool(df: pd.DataFrame) -> Dict[str, Any]:
+    """Generate detailed data profiling information."""
+    profile = {
+        "data_quality": {
+            "duplicate_rows": df.duplicated().sum(),
+            "duplicate_percentage": (df.duplicated().sum() / len(df)) * 100,
+            "constant_columns": [col for col in df.columns if df[col].nunique() <= 1],
+            "high_cardinality": [col for col in df.columns if df[col].nunique() > len(df) * 0.8]
+        },
+        "column_analysis": {}
+    }
+    
+    # Analyze each column
+    for col in df.columns:
+        col_analysis = {
+            "dtype": str(df[col].dtype),
+            "null_count": df[col].isnull().sum(),
+            "null_percentage": (df[col].isnull().sum() / len(df)) * 100,
+            "unique_count": df[col].nunique(),
+            "unique_percentage": (df[col].nunique() / len(df)) * 100
+        }
+        
+        if df[col].dtype in ['object', 'category']:
+            col_analysis["most_common"] = df[col].value_counts().head(3).to_dict()
+        elif df[col].dtype in [np.number]:
+            col_analysis["outliers"] = len(df[(df[col] < df[col].quantile(0.25) - 1.5 * (df[col].quantile(0.75) - df[col].quantile(0.25))) | 
+                                           (df[col] > df[col].quantile(0.75) + 1.5 * (df[col].quantile(0.75) - df[col].quantile(0.25)))])
+        
+        profile["column_analysis"][col] = col_analysis
+    
+    return profile
+
+def CorrelationAnalysisTool(df: pd.DataFrame) -> Dict[str, Any]:
+    """Generate correlation analysis for numeric columns."""
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    
+    if len(numeric_cols) < 2:
+        return {"message": "Not enough numeric columns for correlation analysis"}
+    
+    correlation_matrix = df[numeric_cols].corr()
+    
+    # Find high correlations (absolute value > 0.7)
+    high_correlations = []
+    for i in range(len(correlation_matrix.columns)):
+        for j in range(i+1, len(correlation_matrix.columns)):
+            corr_val = correlation_matrix.iloc[i, j]
+            if abs(corr_val) > 0.7:
+                high_correlations.append({
+                    "var1": correlation_matrix.columns[i],
+                    "var2": correlation_matrix.columns[j],
+                    "correlation": corr_val
+                })
+    
+    return {
+        "correlation_matrix": correlation_matrix.to_dict(),
+        "high_correlations": high_correlations,
+        "numeric_columns": list(numeric_cols)
+    }
+
+def DistributionAnalysisTool(df: pd.DataFrame) -> Dict[str, Any]:
+    """Analyze distributions of numeric columns."""
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    
+    if len(numeric_cols) == 0:
+        return {"message": "No numeric columns found for distribution analysis"}
+    
+    distributions = {}
+    for col in numeric_cols:
+        col_data = df[col].dropna()
+        distributions[col] = {
+            "skewness": col_data.skew(),
+            "kurtosis": col_data.kurtosis(),
+            "normality_test": "Normal" if abs(col_data.skew()) < 0.5 and abs(col_data.kurtosis()) < 0.5 else "Non-normal"
+        }
+    
+    return distributions
+
+# === EDA VISUALIZATION TOOLS ===========================================
+
+def create_distribution_plots(df: pd.DataFrame) -> List[plt.Figure]:
+    """Create distribution plots for numeric columns."""
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    figures = []
+    
+    if len(numeric_cols) == 0:
+        return figures
+    
+    # Limit to first 6 numeric columns to avoid too many plots
+    cols_to_plot = numeric_cols[:6]
+    
+    for col in cols_to_plot:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        
+        # Histogram
+        ax1.hist(df[col].dropna(), bins=30, alpha=0.7, edgecolor='black')
+        ax1.set_title(f'Distribution of {col}')
+        ax1.set_xlabel(col)
+        ax1.set_ylabel('Frequency')
+        
+        # Box plot
+        ax2.boxplot(df[col].dropna())
+        ax2.set_title(f'Box Plot of {col}')
+        ax2.set_ylabel(col)
+        
+        plt.tight_layout()
+        figures.append(fig)
+    
+    return figures
+
+def create_correlation_heatmap(df: pd.DataFrame) -> Optional[plt.Figure]:
+    """Create correlation heatmap for numeric columns."""
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    
+    if len(numeric_cols) < 2:
+        return None
+    
+    correlation_matrix = df[numeric_cols].corr()
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, 
+                square=True, ax=ax, fmt='.2f')
+    ax.set_title('Correlation Matrix')
+    plt.tight_layout()
+    
+    return fig
+
+def create_categorical_plots(df: pd.DataFrame) -> List[plt.Figure]:
+    """Create plots for categorical columns."""
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+    figures = []
+    
+    if len(categorical_cols) == 0:
+        return figures
+    
+    # Limit to first 4 categorical columns
+    cols_to_plot = categorical_cols[:4]
+    
+    for col in cols_to_plot:
+        # Only plot if not too many unique values
+        if df[col].nunique() <= 20:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            
+            value_counts = df[col].value_counts().head(10)  # Top 10 values
+            value_counts.plot(kind='bar', ax=ax)
+            ax.set_title(f'Top Values in {col}')
+            ax.set_xlabel(col)
+            ax.set_ylabel('Count')
+            ax.tick_params(axis='x', rotation=45)
+            
+            plt.tight_layout()
+            figures.append(fig)
+    
+    return figures
+
+# === Comprehensive EDAAgent =============================================
+
+def ComprehensiveEDAAgent(df: pd.DataFrame) -> Dict[str, Any]:
+    """Generate comprehensive EDA analysis including statistics, profiling, and visualizations."""
+    try:
+        eda_results = {
+            "statistical_summary": StatisticalSummaryTool(df),
+            "data_profiling": DataProfilingTool(df),
+            "correlation_analysis": CorrelationAnalysisTool(df),
+            "distribution_analysis": DistributionAnalysisTool(df),
+            "visualizations": {
+                "distribution_plots": create_distribution_plots(df),
+                "correlation_heatmap": create_correlation_heatmap(df),
+                "categorical_plots": create_categorical_plots(df)
+            }
+        }
+        return eda_results
+    except Exception as exc:
+        raise Exception(f"Error generating comprehensive EDA: {exc}")
+
+# === EDA Summary Agent (LLM-powered) ====================================
+
+def EDASummaryAgent(df: pd.DataFrame, eda_results: Dict[str, Any]) -> str:
+    """Use LLM to generate intelligent summary of EDA results."""
+    current_config = get_current_config()
+    
+    # Prepare summary data for LLM
+    summary_data = f"""
+    Dataset Overview:
+    - Shape: {eda_results['statistical_summary']['basic_info']['shape']}
+    - Memory Usage: {eda_results['statistical_summary']['basic_info']['memory_usage']:.2f} MB
+    - Data Types: {eda_results['statistical_summary']['basic_info']['dtypes']}
+    
+    Data Quality:
+    - Missing Values: {eda_results['statistical_summary']['missing_data']['total_missing']} ({eda_results['statistical_summary']['missing_data']['missing_percentage']:.1f}%)
+    - Duplicate Rows: {eda_results['data_profiling']['data_quality']['duplicate_rows']} ({eda_results['data_profiling']['data_quality']['duplicate_percentage']:.1f}%)
+    - Constant Columns: {len(eda_results['data_profiling']['data_quality']['constant_columns'])}
+    - High Cardinality Columns: {len(eda_results['data_profiling']['data_quality']['high_cardinality'])}
+    
+    Numeric Columns: {len(eda_results['statistical_summary']['numeric_summary']) if eda_results['statistical_summary']['numeric_summary'] else 0}
+    Categorical Columns: {len(eda_results['statistical_summary']['categorical_summary']) if eda_results['statistical_summary']['categorical_summary'] else 0}
+    """
+    
+    if eda_results['correlation_analysis'].get('high_correlations'):
+        summary_data += f"\nHigh Correlations Found: {len(eda_results['correlation_analysis']['high_correlations'])}"
+    
+    prompt = f"""
+    You are an expert data analyst. Based on the following EDA results, provide a comprehensive summary:
+    
+    {summary_data}
+    
+    Please provide:
+    1. A brief overview of the dataset characteristics
+    2. Key data quality insights and potential issues
+    3. Notable patterns or relationships discovered
+    4. Recommendations for further analysis
+    5. Potential business insights or questions to explore
+    
+    Keep it concise but informative, focusing on actionable insights.
+    """
+    
+    try:
+        response = client.chat.completions.create(
+            model=current_config.MODEL_NAME,
+            messages=[
+                {"role": "system", "content": current_config.REASONING_FALSE},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=current_config.INSIGHTS_TEMPERATURE,
+            max_tokens=current_config.INSIGHTS_MAX_TOKENS
+        )
+        return response.choices[0].message.content
+    except Exception as exc:
+        raise Exception(f"Error generating EDA summary: {exc}")
+
 # === Helpers ===========================================================
 
 def extract_first_code_block(text: str) -> str:
@@ -471,26 +777,30 @@ def main():
             if "plots" in st.session_state:
                 st.session_state.plots = []
 
-            # Regenerate insights immediately if we have data and file is present
+            # Regenerate EDA analysis and insights immediately if we have data and file is present
             if "df" in st.session_state and file is not None:  # Check if file is still there
-                with st.spinner("Generating dataset insights with new model …"):
+                with st.spinner("Generating EDA analysis with new model …"):
                     try:
+                        st.session_state.eda_results = ComprehensiveEDAAgent(st.session_state.df)
+                        st.session_state.eda_summary = EDASummaryAgent(st.session_state.df, st.session_state.eda_results)
                         st.session_state.insights = DataInsightAgent(st.session_state.df)
-                        st.success(f"Insights updated with {new_config.MODEL_PRINT_NAME}")
+                        st.success(f"EDA analysis updated with {new_config.MODEL_PRINT_NAME}")
                     except Exception as e:
-                        st.error(f"Error updating insights: {str(e)}")
-                        # Clear old insights if regeneration fails
-                        if "insights" in st.session_state:
-                            del st.session_state.insights
-                st.rerun()  # Force UI update to show new insights
+                        st.error(f"Error updating EDA analysis: {str(e)}")
+                        # Clear old results if regeneration fails
+                        for key in ["eda_results", "eda_summary", "insights"]:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                st.rerun()  # Force UI update to show new analysis
         
         
         # Clear data if file is removed (but not during model change). Keep chat history.
         if not file and "df" in st.session_state and "current_file" in st.session_state:
             del st.session_state.df
             del st.session_state.current_file
-            if "insights" in st.session_state:
-                del st.session_state.insights
+            for key in ["insights", "eda_results", "eda_summary"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.rerun()
         
         if file:
@@ -498,35 +808,124 @@ def main():
                 st.session_state.df = pd.read_csv(file)
                 st.session_state.current_file = file.name
                 st.session_state.messages = []
-                # Generate insights with the current model
-                with st.spinner("Generating dataset insights …"):
+                # Generate comprehensive EDA and insights with the current model
+                with st.spinner("Generating comprehensive EDA analysis …"):
                     try:
+                        st.session_state.eda_results = ComprehensiveEDAAgent(st.session_state.df)
+                        st.session_state.eda_summary = EDASummaryAgent(st.session_state.df, st.session_state.eda_results)
                         st.session_state.insights = DataInsightAgent(st.session_state.df)
                     except Exception as e:
-                        st.error(f"Error generating insights: {str(e)}")
-            # Ensure insights exist even if they weren't generated properly
-            elif "insights" not in st.session_state:
-                with st.spinner("Generating dataset insights …"):
+                        st.error(f"Error generating EDA analysis: {str(e)}")
+            # Ensure EDA results exist even if they weren't generated properly
+            elif "eda_results" not in st.session_state:
+                with st.spinner("Generating comprehensive EDA analysis …"):
                     try:
+                        st.session_state.eda_results = ComprehensiveEDAAgent(st.session_state.df)
+                        st.session_state.eda_summary = EDASummaryAgent(st.session_state.df, st.session_state.eda_results)
                         st.session_state.insights = DataInsightAgent(st.session_state.df)
                     except Exception as e:
-                        st.error(f"Error generating insights: {str(e)}")
+                        st.error(f"Error generating EDA analysis: {str(e)}")
         
-        # Display data and insights (always execute if we have data)
+        # Display comprehensive EDA analysis (always execute if we have data)
         if "df" in st.session_state:
-            st.markdown("### Dataset Insights")
+            # Dataset Preview
+            st.markdown("### 📊 Dataset Preview")
+            st.dataframe(st.session_state.df.head())
             
-            # Display insights with model attribution
-            if "insights" in st.session_state and st.session_state.insights:
-                st.dataframe(st.session_state.df.head())
-                st.markdown(st.session_state.insights)
-                # Get current config dynamically for model attribution
+            # EDA Summary
+            if "eda_summary" in st.session_state and st.session_state.eda_summary:
+                st.markdown("### 🔍 EDA Summary")
+                st.markdown(st.session_state.eda_summary)
                 current_config_left = get_current_config()
                 st.markdown(f"*<span style='color: grey; font-style: italic;'>Generated with {current_config_left.MODEL_PRINT_NAME}</span>*", unsafe_allow_html=True)
-            else:
-                st.warning("No insights available.")
+            
+            # Statistical Summary
+            if "eda_results" in st.session_state:
+                eda_results = st.session_state.eda_results
+                
+                # Basic Statistics
+                st.markdown("### 📈 Statistical Summary")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Rows", f"{eda_results['statistical_summary']['basic_info']['shape'][0]:,}")
+                with col2:
+                    st.metric("Columns", eda_results['statistical_summary']['basic_info']['shape'][1])
+                with col3:
+                    st.metric("Memory Usage", f"{eda_results['statistical_summary']['basic_info']['memory_usage']:.1f} MB")
+                
+                # Data Quality Metrics
+                st.markdown("### 🛡️ Data Quality")
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    missing_pct = eda_results['statistical_summary']['missing_data']['missing_percentage']
+                    st.metric("Missing Values", f"{missing_pct:.1f}%")
+                with col2:
+                    dup_pct = eda_results['data_profiling']['data_quality']['duplicate_percentage']
+                    st.metric("Duplicates", f"{dup_pct:.1f}%")
+                with col3:
+                    const_cols = len(eda_results['data_profiling']['data_quality']['constant_columns'])
+                    st.metric("Constant Columns", const_cols)
+                with col4:
+                    high_card = len(eda_results['data_profiling']['data_quality']['high_cardinality'])
+                    st.metric("High Cardinality", high_card)
+                
+                # Column Analysis
+                st.markdown("### 📋 Column Analysis")
+                column_data = []
+                for col, analysis in eda_results['data_profiling']['column_analysis'].items():
+                    column_data.append({
+                        "Column": col,
+                        "Type": analysis['dtype'],
+                        "Missing %": f"{analysis['null_percentage']:.1f}%",
+                        "Unique %": f"{analysis['unique_percentage']:.1f}%",
+                        "Outliers": analysis.get('outliers', 'N/A')
+                    })
+                
+                if column_data:
+                    st.dataframe(pd.DataFrame(column_data), use_container_width=True)
+                
+                # High Correlations
+                if eda_results['correlation_analysis'].get('high_correlations'):
+                    st.markdown("### 🔗 High Correlations")
+                    corr_data = []
+                    for corr in eda_results['correlation_analysis']['high_correlations']:
+                        corr_data.append({
+                            "Variable 1": corr['var1'],
+                            "Variable 2": corr['var2'],
+                            "Correlation": f"{corr['correlation']:.3f}"
+                        })
+                    st.dataframe(pd.DataFrame(corr_data), use_container_width=True)
+                
+                # Visualizations
+                st.markdown("### 📊 Visualizations")
+                
+                # Distribution Plots
+                if eda_results['visualizations']['distribution_plots']:
+                    st.markdown("**Distribution Plots**")
+                    for i, fig in enumerate(eda_results['visualizations']['distribution_plots']):
+                        st.pyplot(fig, use_container_width=False)
+                
+                # Correlation Heatmap
+                if eda_results['visualizations']['correlation_heatmap']:
+                    st.markdown("**Correlation Heatmap**")
+                    st.pyplot(eda_results['visualizations']['correlation_heatmap'], use_container_width=False)
+                
+                # Categorical Plots
+                if eda_results['visualizations']['categorical_plots']:
+                    st.markdown("**Categorical Analysis**")
+                    for fig in eda_results['visualizations']['categorical_plots']:
+                        st.pyplot(fig, use_container_width=False)
+            
+            # Original Dataset Insights
+            if "insights" in st.session_state and st.session_state.insights:
+                st.markdown("### 💡 Suggested Analysis Questions")
+                st.markdown(st.session_state.insights)
+                current_config_left = get_current_config()
+                st.markdown(f"*<span style='color: grey; font-style: italic;'>Generated with {current_config_left.MODEL_PRINT_NAME}</span>*", unsafe_allow_html=True)
         else:
-            st.info("Upload a CSV to begin chatting with your data.")
+            st.info("Upload a CSV to begin comprehensive data analysis.")
 
     with right:
         st.header("Chat with your data") 
