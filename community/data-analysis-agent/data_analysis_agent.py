@@ -24,6 +24,22 @@ from typing import List, Any, Optional, Dict, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+# Additional imports for multi-format support
+try:
+    import openpyxl  # For Excel files
+except ImportError:
+    openpyxl = None
+
+try:
+    import json
+except ImportError:
+    json = None
+
+try:
+    import pyarrow  # For Parquet files
+except ImportError:
+    pyarrow = None
+
 # Try to load from .env file if it exists
 try:
     from dotenv import load_dotenv
@@ -720,6 +736,91 @@ def EDASummaryAgent(df: pd.DataFrame, eda_results: Dict[str, Any]) -> str:
     except Exception as exc:
         raise Exception(f"Error generating EDA summary: {exc}")
 
+# === Universal Data Loading ===========================================
+
+def load_data_from_file(file) -> pd.DataFrame:
+    """
+    Universal data loading function that handles multiple file formats.
+    
+    Supported formats:
+    - CSV (.csv)
+    - Excel (.xlsx, .xls)
+    - JSON (.json)
+    - TSV (.tsv)
+    - Parquet (.parquet)
+    
+    Args:
+        file: Streamlit uploaded file object
+        
+    Returns:
+        pd.DataFrame: Loaded data
+        
+    Raises:
+        Exception: If file format is not supported or loading fails
+    """
+    if file is None:
+        raise ValueError("No file provided")
+    
+    file_extension = file.name.lower().split('.')[-1]
+    
+    try:
+        if file_extension == 'csv':
+            return pd.read_csv(file)
+        
+        elif file_extension in ['xlsx', 'xls']:
+            if openpyxl is None:
+                raise ImportError("openpyxl is required for Excel files. Install with: pip install openpyxl")
+            return pd.read_excel(file)
+        
+        elif file_extension == 'json':
+            if json is None:
+                raise ImportError("json module is required for JSON files")
+            return pd.read_json(file)
+        
+        elif file_extension == 'tsv':
+            return pd.read_csv(file, sep='\t')
+        
+        elif file_extension == 'parquet':
+            if pyarrow is None:
+                raise ImportError("pyarrow is required for Parquet files. Install with: pip install pyarrow")
+            return pd.read_parquet(file)
+        
+        else:
+            # Try to read as CSV as fallback
+            st.warning(f"File format '.{file_extension}' not explicitly supported. Attempting to read as CSV...")
+            return pd.read_csv(file)
+            
+    except Exception as e:
+        raise Exception(f"Error loading {file_extension.upper()} file '{file.name}': {str(e)}")
+
+def get_supported_file_types() -> List[str]:
+    """Get list of supported file extensions."""
+    return ['csv', 'xlsx', 'xls', 'json', 'tsv', 'parquet']
+
+def get_file_type_description() -> str:
+    """Get description of supported file types."""
+    description = """
+    **Supported File Formats:**
+    - **CSV** (.csv) - Comma-separated values
+    - **Excel** (.xlsx, .xls) - Microsoft Excel files
+    - **JSON** (.json) - JavaScript Object Notation
+    - **TSV** (.tsv) - Tab-separated values
+    - **Parquet** (.parquet) - Columnar storage format
+    """
+    
+    # Add dependency warnings
+    missing_deps = []
+    if openpyxl is None:
+        missing_deps.append("openpyxl (for Excel files)")
+    if pyarrow is None:
+        missing_deps.append("pyarrow (for Parquet files)")
+    
+    if missing_deps:
+        description += f"\n\n**Note:** Some formats require additional dependencies: {', '.join(missing_deps)}"
+        description += "\nInstall with: `pip install openpyxl pyarrow`"
+    
+    return description
+
 # === Helpers ===========================================================
 
 def extract_first_code_block(text: str) -> str:
@@ -763,7 +864,14 @@ def main():
 
         st.markdown(f"<medium>Powered by <a href='{display_config.MODEL_URL}'>{display_config.MODEL_PRINT_NAME}</a></medium>", unsafe_allow_html=True)
         
-        file = st.file_uploader("Choose CSV", type=["csv"], key="csv_uploader")
+        # File uploader with support for multiple formats
+        supported_types = get_supported_file_types()
+        file = st.file_uploader(
+            "Choose Data File", 
+            type=supported_types, 
+            key="data_uploader",
+            help=get_file_type_description()
+        )
         
         # Update configuration if model changed
         if selected_model != st.session_state.current_model:
@@ -805,9 +913,17 @@ def main():
         
         if file:
             if ("df" not in st.session_state) or (st.session_state.get("current_file") != file.name):
-                st.session_state.df = pd.read_csv(file)
-                st.session_state.current_file = file.name
-                st.session_state.messages = []
+                # Load data using universal loader
+                with st.spinner(f"Loading {file.name}..."):
+                    try:
+                        st.session_state.df = load_data_from_file(file)
+                        st.session_state.current_file = file.name
+                        st.session_state.messages = []
+                        st.success(f"Successfully loaded {file.name} ({st.session_state.df.shape[0]} rows, {st.session_state.df.shape[1]} columns)")
+                    except Exception as e:
+                        st.error(f"Error loading file: {str(e)}")
+                        st.stop()
+                
                 # Generate comprehensive EDA and insights with the current model
                 with st.spinner("Generating comprehensive EDA analysis …"):
                     try:
@@ -925,7 +1041,7 @@ def main():
                 current_config_left = get_current_config()
                 st.markdown(f"*<span style='color: grey; font-style: italic;'>Generated with {current_config_left.MODEL_PRINT_NAME}</span>*", unsafe_allow_html=True)
         else:
-            st.info("Upload a CSV to begin comprehensive data analysis.")
+            st.info("Upload a data file (CSV, Excel, JSON, TSV, or Parquet) to begin comprehensive data analysis.")
 
     with right:
         st.header("Chat with your data") 
