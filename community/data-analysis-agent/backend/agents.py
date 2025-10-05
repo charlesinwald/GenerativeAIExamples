@@ -19,7 +19,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # dotenv not installed, continue without it
+    pass
 
 # Configuration
 API_BASE_URL = "https://integrate.api.nvidia.com/v1"
@@ -312,7 +312,12 @@ Keep it concise and focused."""
                 "statistical_summary": self.statistical_summary_tool(df),
                 "data_profiling": self.data_profiling_tool(df),
                 "correlation_analysis": self.correlation_analysis_tool(df),
-                "distribution_analysis": self.distribution_analysis_tool(df)
+                "distribution_analysis": self.distribution_analysis_tool(df),
+                "visualizations": {
+                    "distribution_plots": self.create_distribution_plots(df),
+                    "correlation_heatmap": self.create_correlation_heatmap(df),
+                    "categorical_plots": self.create_categorical_plots(df)
+                }
             }
             return eda_results
         except Exception as exc:
@@ -427,6 +432,96 @@ Keep it concise and focused."""
             }
 
         return distributions
+
+    def create_distribution_plots(self, df: pd.DataFrame) -> List[str]:
+        """Create distribution plots for numeric columns, return as base64 strings."""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        plot_images = []
+
+        if len(numeric_cols) == 0:
+            return plot_images
+
+        cols_to_plot = numeric_cols[:6]
+
+        for col in cols_to_plot:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+            ax1.hist(df[col].dropna(), bins=30, alpha=0.7, edgecolor='black')
+            ax1.set_title(f'Distribution of {col}')
+            ax1.set_xlabel(col)
+            ax1.set_ylabel('Frequency')
+
+            ax2.boxplot(df[col].dropna())
+            ax2.set_title(f'Box Plot of {col}')
+            ax2.set_ylabel(col)
+
+            plt.tight_layout()
+
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+            plt.close(fig)
+
+            plot_images.append(img_base64)
+
+        return plot_images
+
+    def create_correlation_heatmap(self, df: pd.DataFrame) -> Optional[str]:
+        """Create correlation heatmap, return as base64 string."""
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+        if len(numeric_cols) < 2:
+            return None
+
+        correlation_matrix = df[numeric_cols].corr()
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0,
+                    square=True, ax=ax, fmt='.2f')
+        ax.set_title('Correlation Matrix')
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+        plt.close(fig)
+
+        return img_base64
+
+    def create_categorical_plots(self, df: pd.DataFrame) -> List[str]:
+        """Create plots for categorical columns, return as base64 strings."""
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+        plot_images = []
+
+        if len(categorical_cols) == 0:
+            return plot_images
+
+        cols_to_plot = categorical_cols[:4]
+
+        for col in cols_to_plot:
+            if df[col].nunique() <= 20:
+                fig, ax = plt.subplots(figsize=(10, 6))
+
+                value_counts = df[col].value_counts().head(10)
+                value_counts.plot(kind='bar', ax=ax)
+                ax.set_title(f'Top Values in {col}')
+                ax.set_xlabel(col)
+                ax.set_ylabel('Count')
+                ax.tick_params(axis='x', rotation=45)
+
+                plt.tight_layout()
+
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                img_base64 = base64.b64encode(buf.read()).decode('utf-8')
+                plt.close(fig)
+
+                plot_images.append(img_base64)
+
+        return plot_images
 
     @staticmethod
     def extract_first_code_block(text: str) -> str:
