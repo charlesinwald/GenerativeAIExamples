@@ -21,6 +21,11 @@ export interface EDAResults {
   data_profiling: DataProfiling;
   correlation_analysis: CorrelationAnalysis;
   distribution_analysis: DistributionAnalysis;
+  visualizations?: {
+    distribution_plots?: string[];
+    correlation_heatmap?: string | null;
+    categorical_plots?: string[];
+  };
 }
 
 export interface StatisticalSummary {
