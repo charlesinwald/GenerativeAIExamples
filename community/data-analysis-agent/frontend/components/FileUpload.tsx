@@ -14,10 +14,15 @@ export default function FileUpload({ onFileSelect, disabled }: FileUploadProps) 
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file && file.type === "text/csv") {
-      onFileSelect(file)
-    } else {
-      alert("Please select a valid CSV file")
+    if (file) {
+      const validExtensions = ['.csv', '.xlsx', '.xls', '.json', '.tsv', '.parquet']
+      const fileExtension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0]
+      
+      if (fileExtension && validExtensions.includes(fileExtension)) {
+        onFileSelect(file)
+      } else {
+        alert("Please select a valid file (CSV, Excel, JSON, TSV, or Parquet)")
+      }
     }
   }
 
@@ -30,7 +35,7 @@ export default function FileUpload({ onFileSelect, disabled }: FileUploadProps) 
       <input
         ref={fileInputRef}
         type="file"
-        accept=".csv"
+        accept=".csv,.xlsx,.xls,.json,.tsv,.parquet"
         onChange={handleFileChange}
         className="hidden"
         disabled={disabled}
@@ -41,7 +46,7 @@ export default function FileUpload({ onFileSelect, disabled }: FileUploadProps) 
         className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-all disabled:opacity-50 disabled:cursor-not-allowed font-medium shadow-sm hover:shadow-md"
       >
         <Upload className="w-4 h-4" />
-        <span>Upload CSV</span>
+        <span>Upload Dataset</span>
       </button>
     </div>
   )

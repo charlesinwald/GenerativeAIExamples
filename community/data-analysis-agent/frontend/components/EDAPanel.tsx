@@ -204,6 +204,66 @@ export default function EDAPanel({ data }: EDAPanelProps) {
           <p className="text-sm whitespace-pre-wrap text-foreground leading-relaxed">{insights}</p>
         </div>
       </section>
+
+      {/* Visualizations */}
+    {eda_results.visualizations && (
+      <section className="space-y-6">
+        <h2 className="text-base font-semibold mb-3 flex items-center gap-2 text-foreground">
+          <BarChart3 className="w-4 h-4 text-primary" />
+          Visualizations
+        </h2>
+        
+        {/* Distribution Plots */}
+        {eda_results.visualizations.distribution_plots && eda_results.visualizations.distribution_plots.length > 0 && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-muted-foreground">Distribution Analysis</h3>
+            <div className="space-y-4">
+              {eda_results.visualizations.distribution_plots.map((imgBase64, idx) => (
+                <div key={idx} className="bg-card rounded-xl border border-border overflow-hidden shadow-sm">
+                  <img 
+                    src={`data:image/png;base64,${imgBase64}`}
+                    alt={`Distribution plot ${idx + 1}`}
+                    className="w-full"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Correlation Heatmap */}
+        {eda_results.visualizations.correlation_heatmap && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-muted-foreground">Correlation Heatmap</h3>
+            <div className="bg-card rounded-xl border border-border overflow-hidden shadow-sm">
+              <img 
+                src={`data:image/png;base64,${eda_results.visualizations.correlation_heatmap}`}
+                alt="Correlation heatmap"
+                className="w-full"
+              />
+            </div>
+          </div>
+        )}
+        
+        {/* Categorical Plots */}
+        {eda_results.visualizations.categorical_plots && eda_results.visualizations.categorical_plots.length > 0 && (
+          <div className="space-y-4">
+            <h3 className="text-sm font-medium text-muted-foreground">Categorical Analysis</h3>
+            <div className="space-y-4">
+              {eda_results.visualizations.categorical_plots.map((imgBase64, idx) => (
+                <div key={idx} className="bg-card rounded-xl border border-border overflow-hidden shadow-sm">
+                  <img 
+                    src={`data:image/png;base64,${imgBase64}`}
+                    alt={`Categorical plot ${idx + 1}`}
+                    className="w-full"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+)}
     </div>
   )
 }
